@@ -9,7 +9,10 @@ func openTTY() (*os.File, *os.File, error) {
 	if err != nil {
 		return nil, nil, err
 	}
-	in, err := os.OpenFile("CONIN$", os.O_RDONLY, 0)
+	// O_RDWR is required: bubbletea calls SetConsoleMode on this handle to
+	// enable raw input mode, which on Windows needs write access. With O_RDONLY
+	// the call fails with ERROR_ACCESS_DENIED ("error making raw: Access is denied").
+	in, err := os.OpenFile("CONIN$", os.O_RDWR, 0)
 	if err != nil {
 		out.Close()
 		return nil, nil, err
