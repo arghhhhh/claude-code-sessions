@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"time"
 
@@ -43,6 +42,15 @@ func (i sessionItem) Description() string {
 		br = "-"
 	}
 	return fmt.Sprintf("%s · %s · %s · %s", when, ep, shortPath(i.s.Project), br)
+}
+
+var globalTTYIn *os.File
+
+func quitNow() tea.Cmd {
+	if globalTTYIn != nil {
+		cancelTTYRead(globalTTYIn)
+	}
+	return tea.Quit
 }
 
 type model struct {
@@ -113,35 +121,35 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		filtering := m.list.FilterState() == list.Filtering
 		switch msg.String() {
 		case "ctrl+c":
-			return m, tea.Quit
+			return m, quitNow()
 		case "q":
 			if !filtering {
-				return m, tea.Quit
+				return m, quitNow()
 			}
 		case "enter":
 			if it, ok := m.list.SelectedItem().(sessionItem); ok {
 				m.resumeCmd = buildResumeCmd(it.s, nil)
-				return m, tea.Quit
+				return m, quitNow()
 			}
 		case "d":
 			if !filtering {
 				if it, ok := m.list.SelectedItem().(sessionItem); ok {
 					m.resumeCmd = buildResumeCmd(it.s, []string{"--dangerously-skip-permissions"})
-					return m, tea.Quit
+					return m, quitNow()
 				}
 			}
 		case "c":
 			if !filtering {
 				if it, ok := m.list.SelectedItem().(sessionItem); ok {
 					m.resumeCmd = buildResumeCmd(it.s, []string{"--chrome"})
-					return m, tea.Quit
+					return m, quitNow()
 				}
 			}
 		case "D":
 			if !filtering {
 				if it, ok := m.list.SelectedItem().(sessionItem); ok {
 					m.resumeCmd = buildResumeCmd(it.s, []string{"--dangerously-skip-permissions", "--chrome"})
-					return m, tea.Quit
+					return m, quitNow()
 				}
 			}
 		case "r":
@@ -201,6 +209,7 @@ func main() {
 	}
 	defer ttyIn.Close()
 	defer ttyOut.Close()
+	globalTTYIn = ttyIn
 	lipgloss.SetDefaultRenderer(lipgloss.NewRenderer(ttyOut))
 
 	delegate := list.NewDefaultDelegate()
@@ -234,9 +243,10 @@ func buildResumeCmd(s Session, extra []string) string {
 	for _, f := range extra {
 		flags += " " + f
 	}
-	if runtime.GOOS == "windows" {
-		return fmt.Sprintf(`cd /d "%s" && claude%s --resume %s`, cwd, flags, s.ID)
-	}
+	// %q always quotes POSIX-style. The cs() shell wrapper is bash, so emitting
+	// cmd.exe syntax (`cd /d "..."`) on Windows breaks eval — bash interprets
+	// `/d` as a directory name. Git Bash handles backslash paths fine inside
+	// double quotes, so a single POSIX form works on all platforms.
 	return fmt.Sprintf(`cd %q && claude%s --resume %s`, cwd, flags, s.ID)
 }
 

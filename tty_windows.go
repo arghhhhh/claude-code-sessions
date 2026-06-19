@@ -31,3 +31,14 @@ func openTTY() (*os.File, *os.File, error) {
 
 	return in, out, nil
 }
+
+// cancelTTYRead unblocks bubbletea's input goroutine, which is parked inside a
+// blocking ReadConsoleInputW on CONIN$. Without this, tea.Quit signals the main
+// loop to exit but Program.Run() can't return until the reader goroutine
+// unwinds — which only happens when the next console event arrives. The user
+// experience is that the binary appears to hang on exit until any key is
+// pressed, so the captured stdout (the resume command) isn't flushed back to
+// the shell wrapper until then.
+func cancelTTYRead(in *os.File) {
+	_ = windows.CancelIoEx(windows.Handle(in.Fd()), nil)
+}

@@ -16,3 +16,5 @@ func openTTY() (*os.File, *os.File, error) {
 	}
 	return in, out, nil
 }
+
+func cancelTTYRead(in *os.File) {}
