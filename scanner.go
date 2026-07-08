@@ -229,11 +229,24 @@ func firstText(raw json.RawMessage) string {
 
 func clean(s string) string {
 	s = strings.TrimSpace(s)
-	// strip leading command/system tags users don't want to see in the preview
-	for _, pfx := range []string{"<local-command-", "<command-name>", "<command-message>"} {
-		if strings.HasPrefix(s, pfx) {
-			if i := strings.Index(s, ">"); i >= 0 && i+1 < len(s) {
-				s = strings.TrimSpace(s[i+1:])
+	// Slash-command messages are stored as an XML-ish blob, e.g.
+	//   <command-name>/voice</command-name>
+	//   <command-message>voice</command-message>
+	//   <command-args>some args</command-args>
+	// Render them as "/voice some args" instead of leaking raw tags.
+	if strings.HasPrefix(s, "<command-name>") {
+		name := strings.TrimSpace(tagContent(s, "command-name"))
+		if args := strings.TrimSpace(tagContent(s, "command-args")); args != "" {
+			name += " " + args
+		}
+		s = name
+	} else {
+		// strip a single leading tag users don't want to see in the preview
+		for _, pfx := range []string{"<local-command-", "<command-message>"} {
+			if strings.HasPrefix(s, pfx) {
+				if i := strings.Index(s, ">"); i >= 0 && i+1 < len(s) {
+					s = strings.TrimSpace(s[i+1:])
+				}
 			}
 		}
 	}
@@ -244,4 +257,19 @@ func clean(s string) string {
 		s = s[:200] + "…"
 	}
 	return s
+}
+
+// tagContent returns the text between <tag> and </tag>, or "" if absent.
+func tagContent(s, tag string) string {
+	open, close := "<"+tag+">", "</"+tag+">"
+	i := strings.Index(s, open)
+	if i < 0 {
+		return ""
+	}
+	i += len(open)
+	j := strings.Index(s[i:], close)
+	if j < 0 {
+		return ""
+	}
+	return s[i : i+j]
 }
