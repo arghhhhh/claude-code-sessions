@@ -1,4 +1,5 @@
 claude-code-sessions
 claude-code-sessions.exe
 *.test
+*~
 .DS_Store

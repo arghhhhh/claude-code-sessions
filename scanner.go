@@ -20,6 +20,7 @@ type Session struct {
 	GitBranch  string
 	StartedAt  time.Time
 	UpdatedAt  time.Time
+	Name       string
 	Preview    string
 	Messages   int
 }
@@ -34,7 +35,11 @@ type rawMsg struct {
 	Version    string          `json:"version"`
 	GitBranch  string          `json:"gitBranch"`
 	Timestamp  string          `json:"timestamp"`
-	Message    json.RawMessage `json:"message"`
+	UUID        string          `json:"uuid"`
+	Summary     string          `json:"summary"`
+	LeafUUID    string          `json:"leafUuid"`
+	CustomTitle string          `json:"customTitle"`
+	Message     json.RawMessage `json:"message"`
 }
 
 type msgBody struct {
@@ -63,6 +68,17 @@ func scanAll() ([]Session, error) {
 		return nil, err
 	}
 	var out []Session
+	// summaries maps a leaf message uuid -> conversation name. Claude writes
+	// summary entries (the titles its /resume picker shows) keyed by the leaf
+	// uuid of the summarized branch, often into a *different* jsonl file than
+	// the session they name — so collect them across all files first.
+	summaries := map[string]string{}
+	// titles maps a sessionId -> the explicit name set via /rename
+	// (a "custom-title" entry). These take precedence over summaries.
+	titles := map[string]string{}
+	// uuidsByIdx holds each session's message uuids (in file order) so we can
+	// match them against summaries in a second pass.
+	var uuidsByIdx [][]string
 	for _, e := range entries {
 		if !e.IsDir() {
 			continue
@@ -77,14 +93,34 @@ func scanAll() ([]Session, error) {
 				continue
 			}
 			full := filepath.Join(projDir, f.Name())
-			s, err := parseSession(full)
+			s, uuids, sums, tls, err := parseSession(full)
 			if err != nil {
 				continue
 			}
 			if s.Project == "" {
 				s.Project = decodeCWD(e.Name())
 			}
+			for k, v := range sums {
+				summaries[k] = v
+			}
+			for k, v := range tls {
+				titles[k] = v
+			}
 			out = append(out, s)
+			uuidsByIdx = append(uuidsByIdx, uuids)
+		}
+	}
+	// Assign each session its name. Precedence: an explicit /rename title wins;
+	// otherwise use a summary whose leaf uuid appears in this session (keeping
+	// the last, most recent match).
+	for i := range out {
+		for _, u := range uuidsByIdx[i] {
+			if name, ok := summaries[u]; ok {
+				out[i].Name = name
+			}
+		}
+		if t, ok := titles[out[i].ID]; ok {
+			out[i].Name = t
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -93,10 +129,13 @@ func scanAll() ([]Session, error) {
 	return out, nil
 }
 
-func parseSession(path string) (Session, error) {
+// parseSession reads one jsonl file and returns its Session, the ordered list
+// of message uuids it contains, any summary entries found in it (leafUuid ->
+// cleaned summary text), and any /rename titles (sessionId -> cleaned title).
+func parseSession(path string) (Session, []string, map[string]string, map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Session{}, err
+		return Session{}, nil, nil, nil, err
 	}
 	defer f.Close()
 
@@ -106,6 +145,9 @@ func parseSession(path string) (Session, error) {
 		ID:        strings.TrimSuffix(filepath.Base(path), ".jsonl"),
 		UpdatedAt: info.ModTime(),
 	}
+	var uuids []string
+	summaries := map[string]string{}
+	titles := map[string]string{}
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
@@ -113,6 +155,17 @@ func parseSession(path string) (Session, error) {
 		var m rawMsg
 		if err := json.Unmarshal(sc.Bytes(), &m); err != nil {
 			continue
+		}
+		if m.Type == "summary" && m.LeafUUID != "" && m.Summary != "" {
+			summaries[m.LeafUUID] = clean(m.Summary)
+			continue
+		}
+		if m.Type == "custom-title" && m.SessionID != "" && m.CustomTitle != "" {
+			titles[m.SessionID] = clean(m.CustomTitle)
+			continue
+		}
+		if m.UUID != "" {
+			uuids = append(uuids, m.UUID)
 		}
 		if m.CWD != "" && s.CWD == "" {
 			s.CWD = m.CWD
@@ -144,7 +197,7 @@ func parseSession(path string) (Session, error) {
 	if s.StartedAt.IsZero() {
 		s.StartedAt = s.UpdatedAt
 	}
-	return s, nil
+	return s, uuids, summaries, titles, nil
 }
 
 func firstText(raw json.RawMessage) string {

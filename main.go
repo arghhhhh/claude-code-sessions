@@ -22,9 +22,14 @@ var (
 type sessionItem struct{ s Session }
 
 func (i sessionItem) FilterValue() string {
-	return i.s.Project + " " + i.s.Preview + " " + i.s.Entrypoint + " " + i.s.GitBranch
+	return i.s.Name + " " + i.s.Project + " " + i.s.Preview + " " + i.s.Entrypoint + " " + i.s.GitBranch
 }
 func (i sessionItem) Title() string {
+	// Prefer the conversation name (Claude's summary title) when present,
+	// falling back to the first user message.
+	if i.s.Name != "" {
+		return i.s.Name
+	}
 	p := i.s.Preview
 	if p == "" {
 		p = "(no preview)"
