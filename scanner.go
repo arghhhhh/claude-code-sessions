@@ -39,6 +39,7 @@ type rawMsg struct {
 	Summary     string          `json:"summary"`
 	LeafUUID    string          `json:"leafUuid"`
 	CustomTitle string          `json:"customTitle"`
+	AiTitle     string          `json:"aiTitle"`
 	Message     json.RawMessage `json:"message"`
 }
 
@@ -74,8 +75,11 @@ func scanAll() ([]Session, error) {
 	// the session they name — so collect them across all files first.
 	summaries := map[string]string{}
 	// titles maps a sessionId -> the explicit name set via /rename
-	// (a "custom-title" entry). These take precedence over summaries.
+	// (a "custom-title" entry). These take precedence over everything.
 	titles := map[string]string{}
+	// aiTitles maps a sessionId -> the auto-generated title Claude Code writes
+	// (an "ai-title" entry). Beats summaries, loses to explicit renames.
+	aiTitles := map[string]string{}
 	// uuidsByIdx holds each session's message uuids (in file order) so we can
 	// match them against summaries in a second pass.
 	var uuidsByIdx [][]string
@@ -93,7 +97,7 @@ func scanAll() ([]Session, error) {
 				continue
 			}
 			full := filepath.Join(projDir, f.Name())
-			s, uuids, sums, tls, err := parseSession(full)
+			s, uuids, sums, tls, ais, err := parseSession(full)
 			if err != nil {
 				continue
 			}
@@ -106,18 +110,24 @@ func scanAll() ([]Session, error) {
 			for k, v := range tls {
 				titles[k] = v
 			}
+			for k, v := range ais {
+				aiTitles[k] = v
+			}
 			out = append(out, s)
 			uuidsByIdx = append(uuidsByIdx, uuids)
 		}
 	}
-	// Assign each session its name. Precedence: an explicit /rename title wins;
-	// otherwise use a summary whose leaf uuid appears in this session (keeping
-	// the last, most recent match).
+	// Assign each session its name. Precedence: an explicit /rename title wins,
+	// then an auto-generated ai-title, then a summary whose leaf uuid appears in
+	// this session (keeping the last, most recent match).
 	for i := range out {
 		for _, u := range uuidsByIdx[i] {
 			if name, ok := summaries[u]; ok {
 				out[i].Name = name
 			}
+		}
+		if t, ok := aiTitles[out[i].ID]; ok {
+			out[i].Name = t
 		}
 		if t, ok := titles[out[i].ID]; ok {
 			out[i].Name = t
@@ -131,11 +141,12 @@ func scanAll() ([]Session, error) {
 
 // parseSession reads one jsonl file and returns its Session, the ordered list
 // of message uuids it contains, any summary entries found in it (leafUuid ->
-// cleaned summary text), and any /rename titles (sessionId -> cleaned title).
-func parseSession(path string) (Session, []string, map[string]string, map[string]string, error) {
+// cleaned summary text), any /rename titles (sessionId -> cleaned title), and
+// any auto-generated ai-titles (sessionId -> cleaned title).
+func parseSession(path string) (Session, []string, map[string]string, map[string]string, map[string]string, error) {
 	f, err := os.Open(path)
 	if err != nil {
-		return Session{}, nil, nil, nil, err
+		return Session{}, nil, nil, nil, nil, err
 	}
 	defer f.Close()
 
@@ -148,6 +159,7 @@ func parseSession(path string) (Session, []string, map[string]string, map[string
 	var uuids []string
 	summaries := map[string]string{}
 	titles := map[string]string{}
+	aiTitles := map[string]string{}
 
 	sc := bufio.NewScanner(f)
 	sc.Buffer(make([]byte, 1024*1024), 16*1024*1024)
@@ -162,6 +174,10 @@ func parseSession(path string) (Session, []string, map[string]string, map[string
 		}
 		if m.Type == "custom-title" && m.SessionID != "" && m.CustomTitle != "" {
 			titles[m.SessionID] = clean(m.CustomTitle)
+			continue
+		}
+		if m.Type == "ai-title" && m.SessionID != "" && m.AiTitle != "" {
+			aiTitles[m.SessionID] = clean(m.AiTitle)
 			continue
 		}
 		if m.UUID != "" {
@@ -197,7 +213,7 @@ func parseSession(path string) (Session, []string, map[string]string, map[string
 	if s.StartedAt.IsZero() {
 		s.StartedAt = s.UpdatedAt
 	}
-	return s, uuids, summaries, titles, nil
+	return s, uuids, summaries, titles, aiTitles, nil
 }
 
 func firstText(raw json.RawMessage) string {
